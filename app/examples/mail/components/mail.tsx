@@ -7,6 +7,7 @@ import {
   ArchiveX,
   File,
   Inbox,
+  Loader2,
   MessagesSquare,
   Search,
   Send,
@@ -36,6 +37,7 @@ import { MailList } from "@/app/examples/mail/components/mail-list"
 import { Nav } from "@/app/examples/mail/components/nav"
 import { type Mail } from "@/app/examples/mail/data"
 import { useMail } from "@/app/examples/mail/use-mail"
+import { supabase } from "@/lib/supabase" // 导入 Supabase 客户端
 
 interface MailProps {
   accounts: {
@@ -43,7 +45,6 @@ interface MailProps {
     email: string
     icon: React.ReactNode
   }[]
-  mails: Mail[]
   defaultLayout: number[] | undefined
   defaultCollapsed?: boolean
   navCollapsedSize: number
@@ -51,13 +52,158 @@ interface MailProps {
 
 export function Mail({
   accounts,
-  mails,
   defaultLayout = [20, 32, 48],
   defaultCollapsed = false,
   navCollapsedSize,
 }: MailProps) {
   const [isCollapsed, setIsCollapsed] = React.useState(defaultCollapsed)
   const [mail] = useMail()
+  const [mails, setMails] = React.useState<Mail[]>([])
+  const [folderCounts, setFolderCounts] = React.useState<Record<string, number>>({})
+  const [loading, setLoading] = React.useState(true)
+  const [searchQuery, setSearchQuery] = React.useState("")
+  const [selectedFolder, setSelectedFolder] = React.useState("Inbox")
+  
+  // 从 Supabase 获取邮件
+  React.useEffect(() => {
+    async function fetchEmails() {
+      setLoading(true)
+      try {
+        // 获取文件夹 ID
+        const { data: folders } = await supabase
+          .from('folders')
+          .select('id, name, type')
+        
+        if (!folders || folders.length === 0) {
+          console.error("No folders found")
+          setLoading(false)
+          return
+        }
+        
+        // 找到当前选中的文件夹
+        const folderObj = folders.find(f => 
+          f.name.toLowerCase() === selectedFolder.toLowerCase() || 
+          f.type.toLowerCase() === selectedFolder.toLowerCase()
+        )
+        
+        if (!folderObj) {
+          console.error("Selected folder not found:", selectedFolder)
+          setLoading(false)
+          return
+        }
+        
+        // 获取该文件夹中的邮件
+        const { data, error } = await supabase
+          .from('emails')
+          .select('*')
+          .eq('folder_id', folderObj.id)
+          .order('received_at', { ascending: false })
+        
+        if (error) {
+          console.error("Error fetching emails:", error)
+          return
+        }
+        
+        // 将数据库格式转换为应用格式
+        const formattedMails = data.map(email => ({
+          id: email.id,
+          name: email.from_name,
+          email: email.from_email,
+          subject: email.subject,
+          text: email.body_text,
+          date: email.received_at,
+          read: email.is_read,
+          labels: [], // 标签数据可能需要另外获取
+        }))
+        
+        setMails(formattedMails)
+        
+        // 获取文件夹计数
+        const counts: Record<string, number> = {}
+        for (const folder of folders) {
+          const { count, error } = await supabase
+            .from('emails')
+            .select('id', { count: 'exact', head: true })
+            .eq('folder_id', folder.id)
+          
+          if (error) {
+            console.error(`Error counting emails in ${folder.name}:`, error)
+            continue
+          }
+          
+          counts[folder.name] = count || 0
+        }
+        
+        setFolderCounts(counts)
+      } catch (e) {
+        console.error("Error fetching data:", e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    fetchEmails()
+  }, [selectedFolder])
+  
+  // 处理搜索功能
+  const filteredMails = React.useMemo(() => {
+    if (!searchQuery) return mails
+    
+    return mails.filter(mail => 
+      mail.subject?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      mail.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      mail.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      mail.text?.toLowerCase().includes(searchQuery.toLowerCase())
+    )
+  }, [mails, searchQuery])
+  
+  // 更新邮件阅读状态
+  const markAsRead = async (emailId: string) => {
+    try {
+      const { error } = await supabase
+        .from('emails')
+        .update({ is_read: true })
+        .eq('id', emailId)
+      
+      if (error) {
+        console.error("Error marking email as read:", error)
+        return
+      }
+      
+      // 更新本地状态
+      setMails(mails.map(m => 
+        m.id === emailId ? { ...m, read: true } : m
+      ))
+    } catch (e) {
+      console.error("Error updating email:", e)
+    }
+  }
+  
+  const handleFolderClick = (folderTitle: string) => {
+    setSelectedFolder(folderTitle)
+  }
+
+  const sendEmail = async (to: string, subject: string, html: string) => {
+    try {
+      const res = await fetch("https://mvqxxtyfzckmxzjcvmmr.functions.supabase.co/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: to,
+          subject,
+          message: html,
+        }),
+      })
+  
+      const data = await res.json()
+      console.log("✅ Email sent:", data)
+      alert("Email sent successfully!")
+    } catch (err) {
+      console.error("❌ Failed to send email", err)
+      alert("Failed to send email. Please try again.")
+    }
+  }
+  
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -107,39 +253,38 @@ export function Mail({
             links={[
               {
                 title: "Inbox",
-                label: "128",
+                label: folderCounts["Inbox"]?.toString() || "0",
                 icon: Inbox,
-                variant: "default",
+                variant: selectedFolder === "Inbox" ? "default" : "ghost",
+                onClick: () => handleFolderClick("Inbox")
               },
               {
                 title: "Drafts",
-                label: "9",
+                label: folderCounts["Drafts"]?.toString() || "0",
                 icon: File,
-                variant: "ghost",
+                variant: selectedFolder === "Drafts" ? "default" : "ghost",
+                onClick: () => handleFolderClick("Drafts")
               },
               {
                 title: "Sent",
-                label: "",
+                label: folderCounts["Sent"]?.toString() || "",
                 icon: Send,
-                variant: "ghost",
-              },
-              {
-                title: "Junk",
-                label: "23",
-                icon: ArchiveX,
-                variant: "ghost",
+                variant: selectedFolder === "Sent" ? "default" : "ghost",
+                onClick: () => handleFolderClick("Sent")
               },
               {
                 title: "Trash",
-                label: "",
+                label: folderCounts["Trash"]?.toString() || "",
                 icon: Trash2,
-                variant: "ghost",
+                variant: selectedFolder === "Trash" ? "default" : "ghost",
+                onClick: () => handleFolderClick("Trash")
               },
               {
                 title: "Archive",
-                label: "",
+                label: folderCounts["Archive"]?.toString() || "",
                 icon: Archive,
-                variant: "ghost",
+                variant: selectedFolder === "Archive" ? "default" : "ghost",
+                onClick: () => handleFolderClick("Archive")
               },
             ]}
           />
@@ -184,7 +329,7 @@ export function Mail({
         <ResizablePanel defaultSize={defaultLayout[1]} minSize={30}>
           <Tabs defaultValue="all">
             <div className="flex items-center px-4 py-2">
-              <h1 className="text-xl font-bold">Inbox</h1>
+              <h1 className="text-xl font-bold">{selectedFolder}</h1>
               <TabsList className="ml-auto">
                 <TabsTrigger
                   value="all"
@@ -205,25 +350,56 @@ export function Mail({
               <form>
                 <div className="relative">
                   <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input placeholder="Search" className="pl-8" />
+                  <Input 
+                    placeholder="Search" 
+                    className="pl-8" 
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
                 </div>
               </form>
             </div>
             <TabsContent value="all" className="m-0">
-              <MailList items={mails} />
+              {loading ? (
+                <div className="flex justify-center items-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <MailList 
+                  items={filteredMails} 
+                  onMailSelect={(id) => {
+                    if (id && !mails.find(m => m.id === id)?.read) {
+                      markAsRead(id)
+                    }
+                  }}
+                />
+              )}
             </TabsContent>
             <TabsContent value="unread" className="m-0">
-              <MailList items={mails.filter((item) => !item.read)} />
+              {loading ? (
+                <div className="flex justify-center items-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <MailList 
+                  items={filteredMails.filter(item => !item.read)}
+                  onMailSelect={(id) => {
+                    if (id) markAsRead(id)
+                  }}
+                />
+              )}
             </TabsContent>
           </Tabs>
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize={defaultLayout[2]} minSize={30}>
           <MailDisplay
-            mail={mails.find((item) => item.id === mail.selected) || null}
+            mail={filteredMails.find((item) => item.id === mail.selected) || null}
+            onSend={sendEmail}
           />
         </ResizablePanel>
       </ResizablePanelGroup>
     </TooltipProvider>
   )
 }
+

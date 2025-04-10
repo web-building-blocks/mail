@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { addDays } from "date-fns/addDays"
 import { addHours } from "date-fns/addHours"
 import { format } from "date-fns/format"
@@ -46,10 +47,12 @@ import { Mail } from "@/app/examples/mail/data"
 
 interface MailDisplayProps {
   mail: Mail | null
+  onSend?: (to: string, subject: string, html: string) => void
 }
 
-export function MailDisplay({ mail }: MailDisplayProps) {
+export function MailDisplay({ mail, onSend }: MailDisplayProps) {
   const today = new Date()
+  const [replyText, setReplyText] = useState("")
 
   return (
     <div className="flex h-full flex-col">
@@ -227,6 +230,8 @@ export function MailDisplay({ mail }: MailDisplayProps) {
                 <Textarea
                   className="p-4"
                   placeholder={`Reply ${mail.name}...`}
+                  value={replyText}
+                  onChange={(e) => setReplyText(e.target.value)}
                 />
                 <div className="flex items-center">
                   <Label
@@ -237,9 +242,20 @@ export function MailDisplay({ mail }: MailDisplayProps) {
                     thread
                   </Label>
                   <Button
-                    onClick={(e) => e.preventDefault()}
+                    type="submit"
                     size="sm"
                     className="ml-auto"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      if (onSend && mail) {
+                        onSend(
+                          mail.email,
+                          `Re: ${mail.subject}`,
+                          `<p>${replyText}</p>`
+                        )
+                        setReplyText("") 
+                      }
+                    }}
                   >
                     Send
                   </Button>
